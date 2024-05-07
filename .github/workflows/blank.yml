@@ -1,0 +1,55 @@
+name: Deploy to Private EC2 via Bastion Host
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    - name: Set up AWS CLI
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-east-1  
+        
+
+    - name: Get EC2 Instances Information
+      id: instances
+      run: |
+        # Retrieve information about the public subnet (bastion host) and private subnet instances
+        PUBLIC_INSTANCE_ID=$(aws ec2 describe-instances --filters "Name=tag:Name,Values=BastionHost" --query "Reservations[].Instances[].InstanceId" --output text)
+        PRIVATE_INSTANCE_ID=$(aws ec2 describe-instances --filters "Name=tag:Name,Values=MyAppInstance" --query "Reservations[].Instances[].InstanceId" --output text)
+        
+        # Store the instance IDs as outputs
+        echo "::set-output name=public_instance_id::$PUBLIC_INSTANCE_ID"
+        echo "::set-output name=private_instance_id::$PRIVATE_INSTANCE_ID"
+
+    - name: Get Private IP Address of Private EC2 Instance
+      id: private_ip
+      run: |
+        # Get the private IP address of the private subnet instance
+        PRIVATE_IP=$(aws ec2 describe-instances --instance-ids ${{ steps.instances.outputs.private_instance_id }} --query "Reservations[].Instances[].PrivateIpAddress" --output text)
+        echo "::set-output name=private_ip::$PRIVATE_IP"
+
+    - name: Deploy Application to Private EC2 Instance via Bastion Host
+      run: |
+        # Define paths for private key and application artifact
+        PRIVATE_KEY_PATH="my-key.pem"  # Adjust as necessary
+        APPLICATION_PATH="target/myapp.war"  # Adjust as necessary
+
+        # Define SSH options to avoid host key prompt
+        SSH_OPTS="-o StrictHostKeyChecking=no"
+
+        # Define SSH command to execute deployment
+        DEPLOY_COMMAND="scp $APPLICATION_PATH ec2-user@$PRIVATE_IP:/var/lib/tomcat/webapps/"
+
+        # SSH into bastion host and then to private instance for deployment
+        ssh -i $PRIVATE_KEY_PATH $SSH_OPTS ec2-user@${{ steps.instances.outputs.public_instance_id }} "ssh -i $PRIVATE_KEY_PATH $SSH_OPTS ec2-user@$PRIVATE_IP \"$DEPLOY_COMMAND\""
